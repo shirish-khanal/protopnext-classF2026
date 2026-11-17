@@ -1,11 +1,22 @@
+from dataclasses import dataclass, field
+from typing import Tuple
+
 import matplotlib
 
 # The tests draw figures, some in background threads (the factory's analyses); the macOS display
 # backend aborts Python there, so use the non-display backend, as on a headless cluster.
 matplotlib.use("Agg")
 
+import pytest  # noqa: E402
 import torch  # noqa: E402
-from torch.utils.data import TensorDataset  # noqa: E402
+from torch.utils.data import DataLoader, TensorDataset  # noqa: E402
+
+from protopnet.activations import CosPrototypeActivation  # noqa: E402
+from protopnet.backbones import construct_backbone  # noqa: E402
+from protopnet.datasets.dataset_prep import SplitDistribution  # noqa: E402
+from protopnet.embedding import AddonLayers  # noqa: E402
+from protopnet.models.vanilla_protopnet import VanillaProtoPNet  # noqa: E402
+from protopnet.prediction_heads import LinearClassPrototypePredictionHead  # noqa: E402
 
 
 class TensorDatasetDict(TensorDataset):
@@ -14,6 +25,86 @@ class TensorDatasetDict(TensorDataset):
     def __getitem__(self, index):
         img, target = super().__getitem__(index)
         return {"img": img, "target": target, "sample_id": index}
+
+
+def make_tiny_ppnet(activation=None) -> VanillaProtoPNet:
+    """Unprojected 2-class VanillaProtoPNet with 2 prototypes per class.
+
+    Prototypes 0 and 1 belong to class 0; prototypes 2 and 3 to class 1.
+    """
+    if activation is None:
+        activation = CosPrototypeActivation()
+    backbone = construct_backbone("resnet18")
+    ppnet = VanillaProtoPNet(
+        backbone=backbone,
+        add_on_layers=AddonLayers(
+            num_prototypes=4,
+            input_channels=backbone.latent_dimension[0],
+            proto_channels=128,
+        ),
+        activation=activation,
+        num_classes=2,
+        num_prototypes_per_class=2,
+    )
+    ppnet.prototype_prediction_head = LinearClassPrototypePredictionHead(
+        prototype_class_identity=ppnet.prototype_layer.prototype_class_identity.clone(),
+        incorrect_class_connection=0,
+    )
+    return ppnet.eval()
+
+
+@dataclass
+class FakeSplitLoaders:
+    project_loader: DataLoader
+    val_loader: DataLoader
+    train_distribution: SplitDistribution = field(
+        default_factory=lambda: SplitDistribution(
+            mean=torch.zeros(3), std=torch.ones(3)
+        )
+    )
+    image_size: Tuple[int, int] = (224, 224)
+
+
+@pytest.fixture
+def toy_loader():
+    data = torch.randn(6, 3, 224, 224)
+    labels = torch.tensor([1, 1, 1, 0, 0, 0], dtype=torch.long)
+    return DataLoader(TensorDatasetDict(data, labels), batch_size=6, shuffle=False)
+
+
+@pytest.fixture
+def toy_batch(toy_loader):
+    return next(iter(toy_loader))
+
+
+@pytest.fixture
+def tiny_ppnet():
+    return make_tiny_ppnet()
+
+
+@pytest.fixture
+def projected_ppnet(tiny_ppnet, toy_loader):
+    tiny_ppnet.project(toy_loader)
+    return tiny_ppnet
+
+
+@pytest.fixture
+def split_loaders(toy_loader):
+    return FakeSplitLoaders(project_loader=toy_loader, val_loader=toy_loader)
+
+
+@pytest.fixture
+def saved_ppnet_path(tiny_ppnet, temp_dir):
+    path = temp_dir / "ppnet.pth"
+    torch.save(tiny_ppnet, path)
+    return path
+
+
+@pytest.fixture
+def saved_projected_ppnet_path(projected_ppnet, temp_dir):
+    path = temp_dir / "projected_ppnet.pth"
+    torch.save(projected_ppnet, path)
+    return path
 
 
 # ---- shared by the metric and figure tests: 8x8 activation maps and a last layer
