@@ -30,6 +30,12 @@ log = logging.getLogger(__name__)
     type=int,
     default=10,
 )
+@click.option(
+    "--orthogonality-loss",
+    type=float,
+    default=None,
+    help="Coefficient for the orthogonality loss on the prototypes; off when not given",
+)
 def run(
     *,
     backbone="resnet50[pretraining=inaturalist]",
@@ -46,6 +52,7 @@ def run(
     num_addon_layers=2,
     fa_func="serial",
     fa_coef=None,
+    orthogonality_loss=None,
     num_prototypes_per_class=10,
     lr_multiplier=1,
     lr_step_gamma=0.1,
@@ -76,6 +83,7 @@ def run(
     - l1_coef: float - coefficient for clustering loss
     - fa_func: str - one of "serial", "l2", or "square" to indicate which type of fine annotation loss to use. if None, fine annotation is deactivated.
     - fa_coef: float - coefficient for fine annotation loss term
+    - orthogonality_loss: float - coefficient for the orthogonality loss term, which pushes prototypes apart. if None, it is off.
     - num_prototypes_per_class: int - number of prototypes to create for each class
     - lr_multiplier: float - multiplier for learning rates. The base values are from protopnet's training.
     - class_specific: boolean - whether to bind prototypes to individual classes or allow them to be distributed unevenly based on training
@@ -120,6 +128,8 @@ def run(
         },
         "device": torch.device("cuda" if torch.cuda.is_available() else "cpu"),
     }
+    if orthogonality_loss is not None:
+        setup["coefs"]["orthogonality_loss"] = orthogonality_loss
     post_forward_calculations = [ClassAwareExtraCalculations()]
 
     batch_sizes, num_accumulation_batches = default_batch_sizes_for_backbone(backbone)

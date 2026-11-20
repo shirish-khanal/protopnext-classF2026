@@ -14,6 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from click.testing import CliRunner
 
 import protopnet.train_protopnet as train_protopnet
 from protopnet.metrics import (
@@ -323,3 +324,58 @@ def test_the_score_runs_the_model_in_eval_mode_and_puts_its_mode_back():
         model, loader, "cpu"
     )
     assert recording.modes == [False] and recording.training
+
+
+# ---- train_protopnet's orthogonality loss: off by default; when set (in Python or on the command
+# line) its coefficient reaches the loss, which then includes protopnext's OrthogonalityLoss
+
+
+def capture_coefs(monkeypatch):
+    """Patch train_protopnet so it stops at the loss, and return the dict its coefficients land in."""
+    seen = {}
+
+    def capture(coefs, **kwargs):
+        seen.update(coefs)
+        raise _Stop  # stop before any training happens
+
+    monkeypatch.setattr(train_protopnet, "loss_for_coefficients", capture)
+    monkeypatch.setattr(
+        train_protopnet, "WeightsAndBiasesTrainLogger", lambda **kwargs: None
+    )
+    monkeypatch.setattr(
+        train_protopnet.datasets,
+        "training_dataloaders",
+        lambda *args, **kwargs: SimpleNamespace(
+            num_classes=2,
+            image_size=(224, 224),
+            train_loader=None,
+            val_loader=None,
+            project_loader=None,
+        ),
+    )
+    return seen
+
+
+@pytest.mark.parametrize(
+    "kwargs, expected", [({}, None), ({"orthogonality_loss": 0.01}, 0.01)]
+)
+def test_orthogonality_loss_reaches_the_loss_only_when_set(
+    monkeypatch, kwargs, expected
+):
+    coefs = capture_coefs(monkeypatch)
+    with pytest.raises(_Stop):
+        train_protopnet.run.callback(
+            backbone="resnet18", dataset="any", activation_function="cosine", **kwargs
+        )
+    assert ("orthogonality_loss" in coefs) is (expected is not None)
+    assert coefs.get("orthogonality_loss") == expected
+
+
+def test_orthogonality_loss_is_a_command_line_option(monkeypatch):
+    coefs = capture_coefs(monkeypatch)
+    result = CliRunner().invoke(
+        train_protopnet.run,
+        ["--backbone", "resnet18", "--dataset", "any", "--orthogonality-loss", "0.01"],
+    )
+    assert isinstance(result.exception, _Stop), result.output
+    assert coefs["orthogonality_loss"] == 0.01
