@@ -23,11 +23,13 @@ from PIL import Image
 
 from protopnet.metrics import (
     annotation_mask,
+    prototype_classes,
+    prototype_display_classes,
+)
+from protopnet.utilities.general_utilities import (
     class_names_from,
     eval_mode,
     given_class_names,
-    prototype_classes,
-    prototype_display_classes,
 )
 from protopnet.visualization import (
     WEIGHTED,
