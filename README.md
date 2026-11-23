@@ -234,3 +234,4 @@ For example, the `ProtoPNetTrainingSchedule` has the following layout:
 6. Huang et al. Evaluation and improvement of interpretability for self-explainable part-prototype networks. ICCV, 2023.
 7. Willard et al. This looks better than that: Better interpretable models with protopnext. arXiv preprint arXiv:2406.14675 (2024).
 8. Moffett et al. Cosine Similarity is Almost All You Need (for Prototypical-Part Models). WACV, 2026.
+9. Barnett et al. A case-based interpretable deep learning model for classification of mass lesions in digital mammography. Nature Machine Intelligence, 2021.

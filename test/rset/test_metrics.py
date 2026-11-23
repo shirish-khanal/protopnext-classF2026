@@ -19,10 +19,10 @@ import protopnet.train_protopnet as train_protopnet
 from protopnet.metrics import (
     ActivationPrecisionScore,
     activation_precision_score,
-    class_names_from,
 )
 from protopnet.train.metrics import InterpretableTrainingMetrics
 from protopnet.train.trainer import format_metrics
+from protopnet.utilities.general_utilities import class_names_from
 
 from .conftest import INSIDE, OUTSIDE, H, LastLayerHead, W
 

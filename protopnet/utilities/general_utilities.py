@@ -1,6 +1,7 @@
 import os
 import subprocess
 import sys
+from contextlib import contextmanager
 
 import numpy as np
 import yaml
@@ -129,3 +130,68 @@ def find_high_activation_crop(activation_map, percentile=95):
             upper_x = j
             break
     return lower_y, upper_y + 1, lower_x, upper_x + 1
+
+
+def model_device(model):
+    """
+    The device of the model's parameters.
+
+    Parameters:
+    -----------
+        model (torch.nn.Module): A model with at least one parameter.
+    """
+    return next(model.parameters()).device
+
+
+@contextmanager
+def eval_mode(model):
+    """
+    Run the model in eval mode, then put it back in the mode it was in.
+
+    Parameters:
+    -----------
+        model (torch.nn.Module): The model to put in eval mode.
+    """
+    was_training = model.training
+    model.eval()
+    try:
+        yield
+    finally:
+        model.train(was_training)
+
+
+def given_class_names(dataset, class_names=None):
+    """
+    `class_names`, else the data's own `dataset.classes`, else None.
+
+    Parameters:
+    -----------
+        dataset (torch.utils.data.Dataset or None): Data that may have a `classes` attribute.
+        class_names (sequence of str or None): Class names that take precedence over the data's.
+    """
+    return class_names if class_names is not None else getattr(dataset, "classes", None)
+
+
+def class_names_from(dataset, num_classes, class_names=None):
+    """
+    Class names: `class_names`, else the data's own `dataset.classes`, else "0".."num_classes-1".
+
+    Parameters:
+    -----------
+        dataset (torch.utils.data.Dataset or None): Data that may have a `classes` attribute.
+        num_classes (int): The model's number of classes.
+        class_names (sequence of str or None): Class names that take precedence over the data's.
+
+    Raises:
+    -------
+        ValueError: If the class names found are not `num_classes` long.
+    """
+    class_names = given_class_names(dataset, class_names)
+    if class_names is None:
+        return [str(c) for c in range(num_classes)]
+    class_names = list(class_names)
+    if len(class_names) != num_classes:
+        raise ValueError(
+            f"The data has {len(class_names)} class names but the model has {num_classes} classes."
+        )
+    return class_names

@@ -3,7 +3,7 @@ import logging
 import pathlib
 import random
 import warnings
-from typing import Union
+from typing import Optional, Sequence, Union
 
 import click
 import cv2
@@ -21,13 +21,15 @@ from .metrics import (
     PERCENTILE,
     activation_precision_score,
     annotation_mask,
-    class_names_from,
-    eval_mode,
-    model_device,
     prototype_classes,
     prototype_display_classes,
 )
-from .utilities.general_utilities import find_high_activation_crop
+from .utilities.general_utilities import (
+    class_names_from,
+    eval_mode,
+    find_high_activation_crop,
+    model_device,
+)
 from .utilities.project_utilities import custom_unravel_index, hash_func
 from .utilities.visualization_utilities import indices_to_upsampled_boxes
 
@@ -86,17 +88,19 @@ def save_prototype_images_to_file(
     normalize_for_fwd=None,
     box_color=(0, 255, 255),
     device="cpu",
-    specify_proto_idx=None,
-    specify_proto_class=None,
+    specify_proto_idx: Optional[Sequence[int]] = None,
+    specify_proto_class: Optional[int] = None,
 ):
     """
     Save prototype images, and images overlaid with heatmaps, to save_loc.
 
-    By default every prototype is rendered. specify_proto_idx (prototype indices) and/or
+    By default every prototype is rendered. specify_proto_idx (prototype indices) or
     specify_proto_class (a class index; a prototype's class is its source sample's target)
-    restrict it to those prototypes. Returns one (overlay_heatmap, original, heatmap,
-    proto_bbox) tuple of paths per rendered prototype.
+    restricts it to those prototypes; setting both raises a ValueError. Returns one
+    (overlay_heatmap, original, heatmap, proto_bbox) tuple of paths per rendered prototype.
     """
+    if specify_proto_idx is not None and specify_proto_class is not None:
+        raise ValueError("Set specify_proto_idx or specify_proto_class, not both.")
 
     img_height, img_width = img_size
 
@@ -115,7 +119,7 @@ def save_prototype_images_to_file(
             for i, p in enumerate(prototype_meta)
             if int(p.target) == int(specify_proto_class)
         }
-        selected = of_class if selected is None else selected & of_class
+        selected = of_class
     saved_paths = []
 
     # Pre collect all prototype sample ids
@@ -1216,6 +1220,19 @@ def _on_grid(shape):
 
 
 def mean_map(acts, pc, w, c, weighted=True):
+    """
+    Class c's mean activation map: the maps of c's prototypes averaged, weighted by their
+    last-layer coefficients for c (or equally, if not weighted).
+
+    Parameters:
+    - acts (torch.Tensor): One image's activation maps, shape (num_prototypes, H, W).
+    - pc (dict): {prototype index: class index or None}, from prototype_classes.
+    - w (torch.Tensor): The last-layer weight, shape (num_classes, num_prototypes).
+    - c (int): The class.
+    - weighted (bool): Weight the maps by their coefficients, default True.
+
+    Returns: (the mean map, shape (H, W), the list of c's prototype indices).
+    """
     protos = [j for j, k in pc.items() if k == c]
     coef = (
         torch.tensor([float(w[c, j]) for j in protos])
@@ -1226,6 +1243,13 @@ def mean_map(acts, pc, w, c, weighted=True):
 
 
 def pam(m, lesion):
+    """
+    Activation precision of one map: the share of its top (1 - PERCENTILE) that falls on the lesion.
+
+    Parameters:
+    - m (torch.Tensor): An activation map, shape (H, W).
+    - lesion (torch.Tensor): Boolean lesion mask of the same shape (see _lesion).
+    """
     top = m >= torch.quantile(m.flatten(), PERCENTILE)
     return float((top & lesion).sum() / top.sum())
 
@@ -1269,6 +1293,30 @@ def plot_image_decisions(
     split=None,
     weighted=WEIGHTED,
 ):
+    """
+    One row per annotated image (up to max_images per class): the image with its lesion outline,
+    the predicted class's mean activation map with its top (1 - PERCENTILE) outlined and its
+    activation precision (PAM), and the top_k prototypes that add most to the prediction
+    (similarity × weight). Images whose mask is empty are skipped. Prints a one-line summary.
+
+    Parameters:
+    - model (ProtoPNet): The model to explain.
+    - ds (torch.utils.data.Dataset): Items with "img", "target" and "fine_annotation".
+    - proto_dir (str or pathlib.Path): The folder save_prototype_images_to_file wrote.
+    - mean (sequence of float): Per-channel mean the images were normalized with.
+    - std (sequence of float): Per-channel standard deviation the images were normalized with.
+    - device (torch.device or str, optional): Where to run the model; defaults to the model's own.
+    - top_k (int): Number of prototypes shown per image, default TOP_PROTOTYPES.
+    - max_images (int): Maximum number of images per class, default MAX_IMAGES.
+    - class_names (sequence of str, optional): Names for the class indices; else the data's
+        `ds.classes`, else class indices.
+    - split (str, optional): A label shown above the figure, e.g. "validation".
+    - weighted (bool): Weight the mean map by last-layer coefficients (see mean_map).
+
+    Returns: (the figure, {image index: (predicted class, PAM, [(prototype, similarity, weight)])}).
+
+    Raises: ValueError if ds has no annotated image.
+    """
     device = _device(model, device)
     pc, w = prototype_classes(model)
     names = class_names_from(ds, w.shape[0], class_names)
@@ -1383,6 +1431,23 @@ def draw_patch_box(ax, box):
 def plot_prototype_grid(
     model, proto_dir, ap_loaders=None, device=None, class_names=None
 ):
+    """
+    One figure per class with that class's prototypes (see prototype_display_classes). For each
+    prototype, the top row shows its source image with the patch box, its last-layer weight for
+    the class and its activation precision on each loader in ap_loaders; the bottom row shows its
+    activation heatmap.
+
+    Parameters:
+    - model (ProtoPNet): The model whose prototypes are shown.
+    - proto_dir (str or pathlib.Path): The folder save_prototype_images_to_file wrote.
+    - ap_loaders (dict, optional): {label: DataLoader} to compute activation precision on, e.g.
+        {"validation": loader}. Without it, only the weights are shown.
+    - device (torch.device or str, optional): Where to run the model; defaults to the model's own.
+    - class_names (sequence of str, optional): Names for the class indices; else the first
+        loader's `dataset.classes`, else class indices.
+
+    Returns: list of figures, one per class that has prototypes.
+    """
     device = _device(model, device)
     proto_class = prototype_display_classes(model)
     w = model.prototype_prediction_head.class_connection_layer.weight.detach().cpu()

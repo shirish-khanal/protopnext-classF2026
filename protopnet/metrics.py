@@ -1,12 +1,12 @@
 # ====== MODEL AND DATA LOADING ======
-from contextlib import contextmanager
-
 import torch
 import torch.nn.functional as F
 import torch.utils.data
 import torchvision.transforms as transforms
 from torchmetrics import Metric
 from torchmetrics.utilities.data import dim_zero_cat
+
+from .utilities.general_utilities import class_names_from, eval_mode, model_device
 
 
 # ======== HELPER FUNCTIONS ========
@@ -370,8 +370,15 @@ ANNOTATION_KEY = "fine_annotation"
 
 
 def prototype_classes_from_weight(weight):
-    """Prototype j's class: the argmax of its last-layer column if that column's max is > 0,
-    else None (it has no class, e.g. a prototype removed by a Proto-RSet edit)."""
+    """
+    Prototype j's class: the argmax of its last-layer column if that column's max is > 0,
+    else None (it has no class, e.g. a prototype removed by a Proto-RSet edit).
+
+    Parameters:
+    - weight (torch.Tensor): The last-layer weight, shape (num_classes, num_prototypes).
+
+    Returns: ({prototype index: class index or None}, the weight detached on the CPU).
+    """
     w = weight.detach().cpu()  # (classes, prototypes)
     return {
         j: (int(w[:, j].argmax()) if w[:, j].max() > 0 else None)
@@ -380,15 +387,31 @@ def prototype_classes_from_weight(weight):
 
 
 def prototype_classes(model):
+    """
+    The model's prototype classes, from its last layer (see prototype_classes_from_weight).
+    This is the one place that decides where a model's prototype classes come from.
+
+    Parameters:
+    - model (ProtoPNet): A model with a linear class connection layer.
+
+    Returns: ({prototype index: class index or None}, the last-layer weight on the CPU).
+    """
     return prototype_classes_from_weight(
         model.prototype_prediction_head.class_connection_layer.weight
     )
 
 
 def prototype_display_classes(model):
-    """Each prototype's class, for showing or grouping prototypes: its last-layer class (prototype_classes,
+    """
+    Each prototype's class, for showing or grouping prototypes: its last-layer class (prototype_classes,
     the class activation precision uses) and, for a prototype without one (e.g. removed by a Proto-RSet
-    edit), the prototype layer's class identity."""
+    edit), the prototype layer's class identity.
+
+    Parameters:
+    - model (ProtoPNet): A model whose prototype layer has a prototype_class_identity.
+
+    Returns: list of class indices, one per prototype.
+    """
     classes, _ = prototype_classes(model)
     if any(c is None for c in classes.values()):
         identity = model.prototype_layer.prototype_class_identity.argmax(dim=1).tolist()
@@ -396,43 +419,13 @@ def prototype_display_classes(model):
     return [classes[j] for j in range(len(classes))]
 
 
-def model_device(model):
-    """The device of the model's parameters."""
-    return next(model.parameters()).device
-
-
-@contextmanager
-def eval_mode(model):
-    """Run the model in eval mode, then put it back in the mode it was in."""
-    was_training = model.training
-    model.eval()
-    try:
-        yield
-    finally:
-        model.train(was_training)
-
-
-def given_class_names(dataset, class_names=None):
-    """`class_names`, else the data's own `dataset.classes`, else None."""
-    return class_names if class_names is not None else getattr(dataset, "classes", None)
-
-
-def class_names_from(dataset, num_classes, class_names=None):
-    """Class names: `class_names`, else the data's own `dataset.classes`, else "0".."num_classes-1"."""
-    class_names = given_class_names(dataset, class_names)
-    if class_names is None:
-        return [str(c) for c in range(num_classes)]
-    class_names = list(class_names)
-    if len(class_names) != num_classes:
-        raise ValueError(
-            f"The data has {len(class_names)} class names but the model has {num_classes} classes."
-        )
-    return class_names
-
-
 def annotation_mask(sample):
-    """The batch's or item's "fine_annotation" mask, as a dense tensor. Not validated, like
+    """
+    The batch's or item's "fine_annotation" mask, as a dense tensor. Not validated, like
     protopnext's fine-annotation loss: use it only when fine annotation is on (fa_coef set).
+
+    Parameters:
+    - sample (dict): A batch or a single item with a "fine_annotation" tensor (sparse or dense).
     """
     mask = sample[ANNOTATION_KEY]
     return mask.to_dense() if mask.is_sparse else mask
@@ -440,7 +433,8 @@ def annotation_mask(sample):
 
 class ActivationPrecisionScore(Metric):
     """
-    Activation precision. For every (annotated image, prototype of the image's class) pair, it is
+    Activation precision, from IAIA-BL (Barnett et al., 2021, https://arxiv.org/abs/2103.12308).
+    For every (annotated image, prototype of the image's class) pair, it is
     the share of the top (1 - percentile) of the prototype's activation map, upsampled to the mask's
     size, that falls on the annotated region (fine_annotation == 0). Prototype classes come from the
     last layer (see prototype_classes_from_weight). Images whose mask is all zeros are not annotated
@@ -451,6 +445,12 @@ class ActivationPrecisionScore(Metric):
     """
 
     def __init__(self, percentile=PERCENTILE, dist_sync_on_step=False):
+        """
+        Parameters:
+        - percentile (float): Activations at or above this quantile of a map count as its top part,
+            default 0.95 (the top 5%).
+        - dist_sync_on_step (bool): torchmetrics parameter.
+        """
         super().__init__(dist_sync_on_step=dist_sync_on_step)
         self.percentile = percentile
         self.add_state("pair_classes", default=[], dist_reduce_fx="cat")
@@ -511,6 +511,7 @@ class ActivationPrecisionScore(Metric):
         )
 
     def compute(self):
+        """The mean precision over all pairs, or nan if there are none."""
         _, _, precisions = self._pairs()
         return precisions.mean() if len(precisions) else torch.tensor(float("nan"))
 
@@ -547,6 +548,13 @@ def activation_precision_score(
     by="prototype": {prototype: (class name, coef, mean, n)}. Class names come from `class_names`,
     else the data (`dataloader.dataset.classes`), else class indices. Like protopnext's
     fine-annotation loss it does not validate the data: use it only when fine annotation is on.
+
+    Parameters:
+    - model (ProtoPNet): The model to score.
+    - dataloader (torch.utils.data.DataLoader): Batches with "img", "target" and "fine_annotation".
+    - device (torch.device or str, optional): Where to run the model; defaults to the model's own.
+    - by (str, optional): None, "class" or "prototype", as above.
+    - class_names (sequence of str, optional): Names for the class indices.
     """
     if by not in (None, "class", "prototype"):
         raise ValueError(f'by must be None, "class" or "prototype", not {by!r}')
@@ -575,7 +583,8 @@ def activation_precision_score(
             names[c]: v
             for c, v in metric.per_class(num_classes=weight.shape[0]).items()
         }
-    return {
-        j: (names[c], coef, m, n)
-        for j, (c, coef, m, n) in metric.per_prototype().items()
-    }
+    elif by == "prototype":
+        return {
+            j: (names[c], coef, m, n)
+            for j, (c, coef, m, n) in metric.per_prototype().items()
+        }

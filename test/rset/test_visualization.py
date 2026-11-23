@@ -617,6 +617,12 @@ def test_render_only_chosen_prototypes_or_one_class(model, loader, tmp_path):
     _check_save_only_one_class(model, loader, tmp_path)
 
 
+def test_render_rejects_chosen_prototypes_and_a_class_together(model, loader, tmp_path):
+    """specify_proto_idx and specify_proto_class cannot be set together."""
+    with pytest.raises(ValueError):
+        render(model, loader, tmp_path, specify_proto_idx=[0], specify_proto_class=0)
+
+
 def test_filtered_renders_add_to_patch_info_instead_of_replacing_it(
     model, loader, tmp_path
 ):
