@@ -61,7 +61,7 @@ def maps(model, item, device=None):
     )[0].cpu()
 
 
-def edited_classes(pc_b, pc_a, num_classes):
+def _edited_classes(pc_b, pc_a, num_classes):
     """Classes whose set of prototypes differs between the two models."""
     return {
         c
@@ -75,7 +75,7 @@ def pam_gains(before, after, ds, device=None, weighted=WEIGHTED):
     """(gain, image index, PAM before, PAM after) for annotated images of edited classes, largest gain first."""
     pc_b, w_b = prototype_classes(before)
     pc_a, w_a = prototype_classes(after)
-    edited = edited_classes(pc_b, pc_a, w_b.shape[0])
+    edited = _edited_classes(pc_b, pc_a, w_b.shape[0])
 
     results = []
     for i in range(len(ds)):
