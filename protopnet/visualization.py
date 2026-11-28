@@ -28,7 +28,6 @@ from .utilities.general_utilities import (
     class_names_from,
     eval_mode,
     find_high_activation_crop,
-    model_device,
 )
 from .utilities.project_utilities import custom_unravel_index, hash_func
 from .utilities.visualization_utilities import indices_to_upsampled_boxes
@@ -1205,7 +1204,7 @@ BOX_ALPHA = 0.25  # the prototype grid's patch box: 75% transparent, so the imag
 
 def _device(model, device):
     """None means the model's own device."""
-    return model_device(model) if device is None else device
+    return next(model.parameters()).device if device is None else device
 
 
 def _picture(item, mean, std):

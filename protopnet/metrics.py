@@ -6,7 +6,7 @@ import torchvision.transforms as transforms
 from torchmetrics import Metric
 from torchmetrics.utilities.data import dim_zero_cat
 
-from .utilities.general_utilities import class_names_from, eval_mode, model_device
+from .utilities.general_utilities import class_names_from, eval_mode
 
 
 # ======== HELPER FUNCTIONS ========
@@ -468,7 +468,8 @@ class ActivationPrecisionScore(Metric):
         )
         mask = mask.to(proto_acts.device)
         has_mask = mask.flatten(1).sum(dim=1) > 0  # all-zero mask = not annotated
-        lesion = (1 - mask) > 0.5  # (B, 1, H, W), True = lesion
+        # (B, 1, H, W), True = the relevant region (e.g. a lesion), where fine annotation allows activation
+        relevant = (1 - mask) > 0.5
         classes, protos, precisions = [], [], []
         for i in torch.nonzero(has_mask).flatten().tolist():
             c = int(targets[i])
@@ -484,12 +485,12 @@ class ActivationPrecisionScore(Metric):
                 mode="bilinear",
                 align_corners=False,
             )[0]
-            on_lesion = lesion[i, 0].flatten()
+            on_relevant = relevant[i, 0].flatten()
             for j, act in zip(js, acts):
                 a = act.flatten()
                 top = a >= torch.quantile(a, self.percentile)
                 precisions.append(
-                    (top & on_lesion).sum().item() / max(top.sum().item(), 1)
+                    (top & on_relevant).sum().item() / max(top.sum().item(), 1)
                 )
                 classes.append(c)
                 protos.append(j)
@@ -559,7 +560,7 @@ def activation_precision_score(
     if by not in (None, "class", "prototype"):
         raise ValueError(f'by must be None, "class" or "prototype", not {by!r}')
     weight = model.prototype_prediction_head.class_connection_layer.weight
-    device = model_device(model) if device is None else device
+    device = next(model.parameters()).device if device is None else device
     metric = ActivationPrecisionScore().to(device)
     updated = False
     with torch.no_grad(), eval_mode(model):

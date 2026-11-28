@@ -132,32 +132,23 @@ def find_high_activation_crop(activation_map, percentile=95):
     return lower_y, upper_y + 1, lower_x, upper_x + 1
 
 
-def model_device(model):
-    """
-    The device of the model's parameters.
-
-    Parameters:
-    -----------
-        model (torch.nn.Module): A model with at least one parameter.
-    """
-    return next(model.parameters()).device
-
-
 @contextmanager
 def eval_mode(model):
     """
-    Run the model in eval mode, then put it back in the mode it was in.
+    Run the model in eval mode, then put each of its modules back in the mode it was in,
+    so a submodule kept in eval mode inside a training model (e.g. a frozen backbone) stays in it.
 
     Parameters:
     -----------
         model (torch.nn.Module): The model to put in eval mode.
     """
-    was_training = model.training
+    modes = [(module, module.training) for module in model.modules()]
     model.eval()
     try:
         yield
     finally:
-        model.train(was_training)
+        for module, training in modes:
+            module.training = training
 
 
 def given_class_names(dataset, class_names=None):

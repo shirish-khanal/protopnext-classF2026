@@ -294,6 +294,16 @@ def test_train_protopnet_turns_activation_precision_on_with_fa_coef(
     assert seen["fine_annotation"] is expected
 
 
+def test_the_score_puts_back_each_submodules_own_mode():
+    """A submodule kept in eval mode inside a training model (e.g. a frozen backbone) stays in eval mode."""
+    model, loader = two_images_three_prototypes()
+    model.backbone = torch.nn.BatchNorm2d(1)
+    model.train()
+    model.backbone.eval()
+    activation_precision_score(model, loader)
+    assert model.training and not model.backbone.training
+
+
 class RecordsMode(StubModel):
     def __init__(self, weight, acts):
         super().__init__(weight, acts)
